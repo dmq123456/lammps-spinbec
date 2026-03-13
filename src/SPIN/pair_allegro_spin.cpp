@@ -135,18 +135,12 @@ PairAllegro_spin::~PairAllegro_spin()
 
 void PairAllegro_spin::init_style()
 {
+  PairSpin::init_style();
+
   if (atom->tag_enable == 0)
     error->all(FLERR, "Pair style PairAllegro_spin requires atom IDs");
 
-  // need a full neighbor list
-  int irequest = neighbor->request(this, instance_me);
-  neighbor->requests[irequest]->half = 0;
-  neighbor->requests[irequest]->full = 1;
-
-  neighbor->requests[irequest]->ghost = 1;
-
-  if (force->newton_pair == 0)
-    error->all(FLERR, "Pair style PairAllegro_spin requires newton pair on");
+  neighbor->requests[neighbor->nrequest - 1]->ghost = 1;
 }
 
 double PairAllegro_spin::init_one(int i, int j)
@@ -325,7 +319,7 @@ void PairAllegro_spin::coeff(int narg, char **arg)
   // set setflag i,j for type pairs where both are mapped to elements
   for (int i = 1; i <= ntypes; i++)
     for (int j = i; j <= ntypes; j++)
-      if ((type_mapper[i] >= 0) && (type_mapper[j] >= 0))
+      if ((type_mapper[i - 1] >= 0) && (type_mapper[j - 1] >= 0))
         setflag[i][j] = 1;
 
   char *batchstr = std::getenv("BATCHSIZE");
@@ -396,11 +390,11 @@ void PairAllegro_spin::compute(int eflag, int vflag)
     memory->grow(emag, nlocal_max, "pair/spin:emag");
   }
 
-#pragma omp parallel for reduction(+ \
-                                   : nedges)
+#pragma omp parallel for reduction(+                                    : nedges)
   for (int ii = 0; ii < nlocal; ii++)
   {
     int i = ilist[ii];
+    emag[i] = 0.0;
 
     int jnum = numneigh[i];
     int *jlist = firstneigh[i];
@@ -419,9 +413,6 @@ void PairAllegro_spin::compute(int eflag, int vflag)
         neigh_per_atom[ii]++;
         nedges++;
       }
-
-      if (ii < inum)
-        emag[i] = 0.0;
     }
   }
 
@@ -452,10 +443,8 @@ void PairAllegro_spin::compute(int eflag, int vflag)
   if (debug_mode)
     printf("Allegro_spin edges: i j rij\n");
 #pragma omp parallel for
-  for (int ii = 0; ii < ntotal; ii++)
+  for (int i = 0; i < ntotal; i++)
   {
-    int i = ilist[ii];
-    int itag = tag[i];
     int itype = type[i];
 
     ij2type[i] = type_mapper[itype - 1];
@@ -476,14 +465,13 @@ void PairAllegro_spin::compute(int eflag, int vflag)
       spin[i][1] = 0;
       spin[i][2] = 0;
     }
+  }
 
-    // if (debug_mode)
-    //   printf("spin %.10g %.10g %.10g\n", spin[i][0], spin[i][1], spin[i][2]);
-
-    if (ii >= nlocal)
-    {
-      continue;
-    }
+#pragma omp parallel for
+  for (int ii = 0; ii < nlocal; ii++)
+  {
+    int i = ilist[ii];
+    int itag = tag[i];
 
     int jnum = numneigh[i];
     int *jlist = firstneigh[i];
@@ -494,7 +482,6 @@ void PairAllegro_spin::compute(int eflag, int vflag)
       int j = jlist[jj];
       j &= NEIGHMASK;
       int jtag = tag[j];
-      int jtype = type[j];
 
       double dx = x[i][0] - x[j][0];
       double dy = x[i][1] - x[j][1];
@@ -566,12 +553,9 @@ void PairAllegro_spin::compute(int eflag, int vflag)
 
   eng_vdwl = 0.0;
   // const double hbar = hbar;
-#pragma omp parallel for reduction(+ \
-                                   : eng_vdwl)
-  for (int ii = 0; ii < ntotal; ii++)
+#pragma omp parallel for reduction(+                                    : eng_vdwl)
+  for (int i = 0; i < ntotal; i++)
   {
-    int i = ilist[ii];
-
     f[i][0] = forces[i][0];
     f[i][1] = forces[i][1];
     f[i][2] = forces[i][2];
@@ -588,58 +572,41 @@ void PairAllegro_spin::compute(int eflag, int vflag)
       fm[i][1] = 0;
       fm[i][2] = 0;
     }
-    if (eflag_atom && ii < inum)
-      eatom[i] = atomic_energies[i][0];
-    if (ii < inum)
+    if (i < nlocal)
+    {
+      if (eflag_atom)
+        eatom[i] = atomic_energies[i][0];
       eng_vdwl += atomic_energies[i][0];
-    if (ii < inum)
       emag[i] = atomic_energies[i][0];
+    }
+  }
 
-    if (vflag_atom)
+  if (vflag_atom)
+  {
+    torch::Tensor atomic_virial_tensor = output.at("atom_virial").toTensor().cpu();
+    auto atomic_virial = atomic_virial_tensor.accessor<float, 3>();
+    for (int i = 0; i < nlocal; i++)
     {
-      torch::Tensor atomic_virial_tensor = output.at("atom_virial").toTensor().cpu();      
-      auto atomic_virial = atomic_virial_tensor.accessor<float, 3>();
-      for (int ii = 0; ii < ntotal; ii++)
-      {
-        int i = ilist[ii];
-        cvatom[i][0] += 1.0 * atomic_virial[i][0][0]; // xx
-        cvatom[i][1] += 1.0 * atomic_virial[i][1][1]; // yy
-        cvatom[i][2] += 1.0 * atomic_virial[i][2][2]; // zz
-        cvatom[i][3] += 1.0 * atomic_virial[i][0][1]; // xy
-        cvatom[i][4] += 1.0 * atomic_virial[i][0][2]; // xz
-        cvatom[i][5] += 1.0 * atomic_virial[i][1][2]; // yz
-        cvatom[i][6] += 1.0 * atomic_virial[i][1][0]; // yx
-        cvatom[i][7] += 1.0 * atomic_virial[i][2][0]; // zx
-        cvatom[i][8] += 1.0 * atomic_virial[i][2][1]; // zy
-      }
-      // if (debug_mode)
-      //   printf("atomic_virial      %.10g %.10g %.10g\n", atomic_virial[i][0][0], atomic_virial[i][1][1], atomic_virial[i][2][2]);
+      cvatom[i][0] += 1.0 * atomic_virial[i][0][0]; // xx
+      cvatom[i][1] += 1.0 * atomic_virial[i][1][1]; // yy
+      cvatom[i][2] += 1.0 * atomic_virial[i][2][2]; // zz
+      cvatom[i][3] += 1.0 * atomic_virial[i][0][1]; // xy
+      cvatom[i][4] += 1.0 * atomic_virial[i][0][2]; // xz
+      cvatom[i][5] += 1.0 * atomic_virial[i][1][2]; // yz
+      cvatom[i][6] += 1.0 * atomic_virial[i][1][0]; // yx
+      cvatom[i][7] += 1.0 * atomic_virial[i][2][0]; // zx
+      cvatom[i][8] += 1.0 * atomic_virial[i][2][1]; // zy
     }
-    if (debug_mode)
-    {
-      std::cout << "Allegro model output:\n";
-      std::cout << "forces: " << forces_tensor << "\n";
-      std::cout << "atomic_energy: " << atomic_energy_tensor << "\n";
-      if (vflag)
-        std::cout << "virial: " << output.at("virial").toTensor().cpu() << std::endl;
-      if (atom->bec_flag)
-        std::cout << "born_effective_charges: " << output.at("born_effective_charges").toTensor().cpu() << std::endl;
-    }
-    // if (debug_mode)
-    // {
-    //   if (ii < inum)
-    //   {
-    //     printf("i  %d\n", i);
-    //     printf("atomic_energies  %.10g\n", atomic_energies[i][0]);
-    //     printf("pos              %.10g %.10g %.10g\n", pos[i][0], pos[i][1], pos[i][2]);
-    //     printf("f           %.10g %.10g %.10g\n", f[i][0], f[i][1], f[i][2]);
-    //     printf("import sp        %.10g %.10g %.10g\n", sp[i][0], sp[i][1], sp[i][2]);
-    //     printf("model spin       %.10g %.10g %.10g\n", spin[i][0], spin[i][1], spin[i][2]);
-    //     printf("fm      %.10g %.10g %.10g\n", fm[i][0], fm[i][1], fm[i][2]);
-    //     printf("virial      %.10g %.10g %.10g %.10g %.10g %.10g\n", virial[0], virial[1], virial[2],
-    //            virial[3], virial[4], virial[5]);
-    //   }
-    // }
+  }
+  if (debug_mode)
+  {
+    std::cout << "Allegro model output:" << std::endl;
+    std::cout << "forces: " << forces_tensor << std::endl;
+    std::cout << "atomic_energy: " << atomic_energy_tensor << std::endl;
+    if (vflag)
+      std::cout << "virial: " << output.at("virial").toTensor().cpu() << std::endl;
+    if (atom->bec_flag)
+      std::cout << "born_effective_charges: " << output.at("born_effective_charges").toTensor().cpu() << std::endl;
   }
 }
 
