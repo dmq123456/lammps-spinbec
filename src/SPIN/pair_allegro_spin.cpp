@@ -36,6 +36,7 @@
 #include <iostream>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/script.h>
@@ -523,8 +524,22 @@ void PairAllegro_spin::compute(int eflag, int vflag)
   torch::Tensor forces_tensor = output.at("forces").toTensor().cpu();
   auto forces = forces_tensor.accessor<float, 2>();
 
-  torch::Tensor spin_forces_tensor = output.at("spin_forces").toTensor().cpu();
-  auto spin_forces = spin_forces_tensor.accessor<float, 2>();
+  torch::Tensor spin_forces_tensor;
+  bool have_spin_forces = true;
+  try
+  {
+    spin_forces_tensor = output.at("spin_forces").toTensor().cpu();
+  }
+  catch (const std::out_of_range &)
+  {
+    have_spin_forces = false;
+    static int warned_missing_spin_forces = 0;
+    if (!warned_missing_spin_forces && comm->me == 0)
+      error->warning(
+          FLERR,
+          "Pair style spin/allegro_spin model has no spin_forces output; spin torques will be set to zero");
+    warned_missing_spin_forces = 1;
+  }
 
   // torch::Tensor total_energy_tensor = output.at("total_energy").toTensor().cpu(); WRONG WITH MPI
 
@@ -553,6 +568,8 @@ void PairAllegro_spin::compute(int eflag, int vflag)
 
   eng_vdwl = 0.0;
   // const double hbar = hbar;
+  const float *spin_forces_ptr = nullptr;
+  if (have_spin_forces) spin_forces_ptr = spin_forces_tensor.data_ptr<float>();
 #pragma omp parallel for reduction(+                                    : eng_vdwl)
   for (int i = 0; i < ntotal; i++)
   {
@@ -560,11 +577,11 @@ void PairAllegro_spin::compute(int eflag, int vflag)
     f[i][1] = forces[i][1];
     f[i][2] = forces[i][2];
 
-    if (sp[i][3] > 0)
+    if (have_spin_forces && sp[i][3] > 0)
     {
-      fm[i][0] = spin_forces[i][0] / hbar;
-      fm[i][1] = spin_forces[i][1] / hbar;
-      fm[i][2] = spin_forces[i][2] / hbar;
+      fm[i][0] = spin_forces_ptr[3 * i + 0] / hbar;
+      fm[i][1] = spin_forces_ptr[3 * i + 1] / hbar;
+      fm[i][2] = spin_forces_ptr[3 * i + 2] / hbar;
     }
     else
     {
@@ -572,6 +589,7 @@ void PairAllegro_spin::compute(int eflag, int vflag)
       fm[i][1] = 0;
       fm[i][2] = 0;
     }
+
     if (i < nlocal)
     {
       if (eflag_atom)
@@ -650,6 +668,8 @@ void PairAllegro_spin::compute(int eflag, int vflag)
     std::cout << "Allegro model output:" << std::endl;
     std::cout << "forces: " << forces_tensor << std::endl;
     std::cout << "atomic_energy: " << atomic_energy_tensor << std::endl;
+    if (have_spin_forces)
+      std::cout << "spin forces: " << spin_forces_tensor << std::endl;
     if (vflag)
       std::cout << "virial: " << output.at("virial").toTensor().cpu() << std::endl;
     if (atom->bec_flag)
