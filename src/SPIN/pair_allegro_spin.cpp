@@ -598,6 +598,53 @@ void PairAllegro_spin::compute(int eflag, int vflag)
       cvatom[i][8] += 1.0 * atomic_virial[i][2][1]; // zy
     }
   }
+  if (atom->bec_flag)
+  {
+    double **bec = atom->bec;
+    torch::Tensor bec_tensor = output.at("born_effective_charges").toTensor().cpu();
+    auto becs_nn = bec_tensor.accessor<float, 2>();
+
+    double bec_all[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double bec_all_mpi[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    int nlocal_mpi = 0;
+
+    for (int i = 0; i < nlocal; i++)
+    {
+      bec[i][0] = becs_nn[i][0];
+      bec[i][1] = becs_nn[i][1];
+      bec[i][2] = becs_nn[i][2];
+      bec[i][3] = becs_nn[i][3];
+      bec[i][4] = becs_nn[i][4];
+      bec[i][5] = becs_nn[i][5];
+      bec[i][6] = becs_nn[i][6];
+      bec[i][7] = becs_nn[i][7];
+      bec[i][8] = becs_nn[i][8];
+
+      bec_all[0] += bec[i][0];
+      bec_all[1] += bec[i][1];
+      bec_all[2] += bec[i][2];
+      bec_all[3] += bec[i][3];
+      bec_all[4] += bec[i][4];
+      bec_all[5] += bec[i][5];
+      bec_all[6] += bec[i][6];
+      bec_all[7] += bec[i][7];
+      bec_all[8] += bec[i][8];
+    }
+
+    MPI_Allreduce(bec_all, bec_all_mpi, 9, MPI_DOUBLE, MPI_SUM, world);
+    MPI_Allreduce(&nlocal, &nlocal_mpi, 1, MPI_INT, MPI_SUM, world);
+    double bec_ave_zero[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    for (int ii = 0; ii < 9; ii++) {
+      bec_ave_zero[ii] = bec_all_mpi[ii] / nlocal_mpi;
+    }
+
+    for (int i = 0; i < nlocal; i++)
+    {
+      for (int j = 0; j < 9; j++) {
+        bec[i][j] -= bec_ave_zero[j];
+      }
+    }
+  }
   if (debug_mode)
   {
     std::cout << "Allegro model output:" << std::endl;
