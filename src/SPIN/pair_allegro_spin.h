@@ -48,6 +48,9 @@ class PairAllegro_spin : public PairSpin {
 
   int batch_size = -1;
 
+  bool use_constant_bec;
+  std::vector<double> bec_constant_per_type;
+
   // void write_restart(FILE *);
   // void read_restart(FILE *);
   // void write_restart_settings(FILE *);

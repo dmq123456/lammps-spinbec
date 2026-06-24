@@ -73,6 +73,8 @@ PairAllegro_spin::PairAllegro_spin(LAMMPS *lmp) : PairSpin(lmp)
   centroidstressflag =
       CENTROID_AVAIL; // Allow the use of the centroid/stress/atom. - Added by Hongyu Yu
 
+  use_constant_bec = false;
+
   if (const char *env_p = std::getenv("ALLEGRO_DEBUG"))
   {
     std::cout << "PairAllegro_spin is in DEBUG mode, since ALLEGRO_DEBUG is in env\n";
@@ -172,11 +174,12 @@ void PairAllegro_spin::coeff(int narg, char **arg)
 
   int ntypes = atom->ntypes;
 
-  // Should be exactly 3 arguments following "pair_coeff" in the input file.
-  if (narg != (3 + ntypes))
+  // Requires at least: * * <model>.pth <type1> <type2> ... <typen>
+  // Optionally followed by: bec_constant <val1> ... <val_n>
+  if (narg < (3 + ntypes))
     error->all(FLERR,
                "Incorrect args for pair coefficients, should be * * <model>.pth <type1> <type2> "
-               "... <typen>");
+               "... <typen> [bec_constant <val1> ... <val_n>]");
 
   // Ensure I,J args are "* *".
   if (strcmp(arg[0], "*") != 0 || strcmp(arg[1], "*") != 0)
@@ -315,6 +318,21 @@ void PairAllegro_spin::coeff(int narg, char **arg)
         std::cout << i << " | " << ele << " | " << itype << " | " << arg[itype + 3 - 1] << "\n";
       }
     }
+  }
+
+  // Parse optional bec_constant keyword
+  int idx = 3 + ntypes;
+  if (idx < narg) {
+    if (strcmp(arg[idx], "bec_constant") != 0)
+      error->all(FLERR, "Unexpected extra argument after type names in pair_coeff; "
+                        "expected \"bec_constant\"");
+    idx++;
+    if (idx + ntypes != narg)
+      error->all(FLERR, "Incorrect number of bec_constant values; expected one per type");
+    use_constant_bec = true;
+    bec_constant_per_type.resize(ntypes);
+    for (int i = 0; i < ntypes; i++)
+      bec_constant_per_type[i] = std::stod(arg[idx++]);
   }
 
   // set setflag i,j for type pairs where both are mapped to elements
@@ -619,35 +637,57 @@ void PairAllegro_spin::compute(int eflag, int vflag)
   if (atom->bec_flag)
   {
     double **bec = atom->bec;
-    torch::Tensor bec_tensor = output.at("born_effective_charges").toTensor().cpu();
-    auto becs_nn = bec_tensor.accessor<float, 2>();
 
     double bec_all[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    if (use_constant_bec) {
+      static int warned_constant_bec = 0;
+      if (!warned_constant_bec && comm->me == 0)
+        error->warning(FLERR, "Pair style spin/allegro_spin: using constant BEC from pair_coeff "
+                              "bec_constant (model does not supply born_effective_charges)");
+      warned_constant_bec = 1;
+
+      int *type = atom->type;
+      for (int i = 0; i < nlocal; i++) {
+        double v = bec_constant_per_type[type[i] - 1];
+        bec[i][0] = v;  bec[i][1] = 0;  bec[i][2] = 0;
+        bec[i][3] = 0;  bec[i][4] = v;  bec[i][5] = 0;
+        bec[i][6] = 0;  bec[i][7] = 0;  bec[i][8] = v;
+
+        bec_all[0] += v;
+        bec_all[4] += v;
+        bec_all[8] += v;
+      }
+    } else {
+      torch::Tensor bec_tensor = output.at("born_effective_charges").toTensor().cpu();
+      auto becs_nn = bec_tensor.accessor<float, 2>();
+
+      for (int i = 0; i < nlocal; i++)
+      {
+        bec[i][0] = becs_nn[i][0];
+        bec[i][1] = becs_nn[i][1];
+        bec[i][2] = becs_nn[i][2];
+        bec[i][3] = becs_nn[i][3];
+        bec[i][4] = becs_nn[i][4];
+        bec[i][5] = becs_nn[i][5];
+        bec[i][6] = becs_nn[i][6];
+        bec[i][7] = becs_nn[i][7];
+        bec[i][8] = becs_nn[i][8];
+
+        bec_all[0] += bec[i][0];
+        bec_all[1] += bec[i][1];
+        bec_all[2] += bec[i][2];
+        bec_all[3] += bec[i][3];
+        bec_all[4] += bec[i][4];
+        bec_all[5] += bec[i][5];
+        bec_all[6] += bec[i][6];
+        bec_all[7] += bec[i][7];
+        bec_all[8] += bec[i][8];
+      }
+    }
+
     double bec_all_mpi[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     int nlocal_mpi = 0;
-
-    for (int i = 0; i < nlocal; i++)
-    {
-      bec[i][0] = becs_nn[i][0];
-      bec[i][1] = becs_nn[i][1];
-      bec[i][2] = becs_nn[i][2];
-      bec[i][3] = becs_nn[i][3];
-      bec[i][4] = becs_nn[i][4];
-      bec[i][5] = becs_nn[i][5];
-      bec[i][6] = becs_nn[i][6];
-      bec[i][7] = becs_nn[i][7];
-      bec[i][8] = becs_nn[i][8];
-
-      bec_all[0] += bec[i][0];
-      bec_all[1] += bec[i][1];
-      bec_all[2] += bec[i][2];
-      bec_all[3] += bec[i][3];
-      bec_all[4] += bec[i][4];
-      bec_all[5] += bec[i][5];
-      bec_all[6] += bec[i][6];
-      bec_all[7] += bec[i][7];
-      bec_all[8] += bec[i][8];
-    }
 
     MPI_Allreduce(bec_all, bec_all_mpi, 9, MPI_DOUBLE, MPI_SUM, world);
     MPI_Allreduce(&nlocal, &nlocal_mpi, 1, MPI_INT, MPI_SUM, world);
