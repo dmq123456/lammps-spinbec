@@ -38,6 +38,7 @@
 #include "pair_hybrid.h"
 #include "pair_spin.h"
 #include "update.h"
+#include "utils.h"
 
 #include <cstring>
 
@@ -102,6 +103,15 @@ FixNVESpin::FixNVESpin(LAMMPS *lmp, int narg, char **arg) :
   // changing the lattice option, from (yes,no) -> (moving,frozen)
   // for now, (yes,no) still works (to avoid user's confusions).
 
+  // moment scaling is OFF by default (behavior unchanged). When enabled via
+  // "moment_scale yes [alpha <a>]", each spin's precession rate is multiplied by
+  // 2/((1+alpha^2)*|S_i|) so nve/spin reproduces the spin/sib frequency
+  // convention (per-atom |S_i| = sp[i][3]; alpha defaults to 0 for conservative
+  // dynamics). Intended for use with pair_style spin/allegro_spin.
+
+  moment_scale_flag = 0;
+  moment_alpha = 0.0;
+
   int iarg = 3;
   while (iarg < narg) {
     if (strcmp(arg[iarg],"lattice") == 0) {
@@ -111,6 +121,16 @@ FixNVESpin::FixNVESpin(LAMMPS *lmp, int narg, char **arg) :
       else if (strcmp(arg[iarg+1],"yes") == 0) lattice_flag = 1;
       else if (strcmp(arg[iarg+1],"moving") == 0) lattice_flag = 1;
       else error->all(FLERR,"Illegal fix/NVE/spin command");
+      iarg += 2;
+    } else if (strcmp(arg[iarg],"moment_scale") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix/NVE/spin command");
+      if (strcmp(arg[iarg+1],"yes") == 0) moment_scale_flag = 1;
+      else if (strcmp(arg[iarg+1],"no") == 0) moment_scale_flag = 0;
+      else error->all(FLERR,"Illegal fix/NVE/spin command");
+      iarg += 2;
+    } else if (strcmp(arg[iarg],"alpha") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix/NVE/spin command");
+      moment_alpha = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       iarg += 2;
     } else error->all(FLERR,"Illegal fix/NVE/spin command");
   }
@@ -671,20 +691,28 @@ void FixNVESpin::AdvanceSingleSpin(int i)
   double **fm = atom->fm;
   double fm2,energy,dts2;
   double cp[3],g[3];
+  double dts_local = dts;
+
+  // optional per-atom moment scaling: precession rate *= 2/((1+alpha^2)|S_i|),
+  // applied by scaling this atom's spin timestep only (fm[i] is left untouched).
+  // Guarded against sp[i][3] == 0 (non-magnetic atoms are carried in the group
+  // for the lattice MD but must not divide by zero).
+  if (moment_scale_flag && sp[i][3] > 0.0)
+    dts_local = dts * 2.0 / ((1.0 + moment_alpha*moment_alpha) * sp[i][3]);
 
   cp[0] = cp[1] = cp[2] = 0.0;
   g[0] = g[1] = g[2] = 0.0;
   fm2 = (fm[i][0]*fm[i][0])+(fm[i][1]*fm[i][1])+(fm[i][2]*fm[i][2]);
   energy = (sp[i][0]*fm[i][0])+(sp[i][1]*fm[i][1])+(sp[i][2]*fm[i][2]);
-  dts2 = dts*dts;
+  dts2 = dts_local*dts_local;
 
   cp[0] = fm[i][1]*sp[i][2] - fm[i][2]*sp[i][1];
   cp[1] = fm[i][2]*sp[i][0] - fm[i][0]*sp[i][2];
   cp[2] = fm[i][0]*sp[i][1] - fm[i][1]*sp[i][0];
 
-  g[0] = sp[i][0] + cp[0]*dts;
-  g[1] = sp[i][1] + cp[1]*dts;
-  g[2] = sp[i][2] + cp[2]*dts;
+  g[0] = sp[i][0] + cp[0]*dts_local;
+  g[1] = sp[i][1] + cp[1]*dts_local;
+  g[2] = sp[i][2] + cp[2]*dts_local;
 
   g[0] += (fm[i][0]*energy - 0.5*sp[i][0]*fm2)*0.5*dts2;
   g[1] += (fm[i][1]*energy - 0.5*sp[i][1]*fm2)*0.5*dts2;

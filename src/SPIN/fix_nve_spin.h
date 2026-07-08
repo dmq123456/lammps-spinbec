@@ -53,6 +53,9 @@ class FixNVESpin : public Fix {
 
   double dtv, dtf, dts;    // velocity, force, and spin timesteps
 
+  int moment_scale_flag;    // 1: scale precession rate by 2/((1+alpha^2)|S_i|)
+  double moment_alpha;      // alpha used in the moment-scaling factor
+
   int nlocal_max;    // max value of nlocal (for size of lists)
 
   int pair_spin_flag;          // magnetic pair flags
