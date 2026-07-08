@@ -19,6 +19,7 @@
 #include "pair.h"
 #include "atom.h"
 #include "atom_vec.h"
+#include "comm.h"
 
 
 // #include <cmath>
@@ -38,12 +39,14 @@ void BecDipoleReset::command(int narg, char **arg)
   if (atom->bec_flag){
     double **bec_dipole = atom->bec_dipole;
     int nlocal = atom->nlocal;
-    printf("\n");
-    printf("--------------------------------\n");
-    printf("Reset Dipole from BEC to zero\n");
-    printf("Dipole below treat positions right now as the standard\n");
-    printf("--------------------------------\n");
-    printf("\n");
+    if (comm->me == 0) {
+      printf("\n");
+      printf("--------------------------------\n");
+      printf("Reset Dipole from BEC to zero\n");
+      printf("Dipole below treat positions right now as the standard\n");
+      printf("--------------------------------\n");
+      printf("\n");
+    }
     for (int i = 0; i < nlocal; i++) {
         bec_dipole[i][0] = 0.0;
         bec_dipole[i][1] = 0.0;

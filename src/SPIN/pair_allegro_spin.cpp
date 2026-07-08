@@ -123,7 +123,8 @@ PairAllegro_spin::PairAllegro_spin(LAMMPS *lmp) : PairSpin(lmp)
   {
     device = torch::kCPU;
   }
-  std::cout << "Allegro_spin is using device " << device << "\n";
+  if (comm->me == 0)
+    std::cout << "Allegro_spin is using device " << device << "\n";
 }
 
 PairAllegro_spin::~PairAllegro_spin()
@@ -195,7 +196,8 @@ void PairAllegro_spin::coeff(int narg, char **arg)
     elements[i] = arg[i + 1];
   }
 
-  std::cout << "Allegro_spin: Loading model from " << arg[2] << "\n";
+  if (comm->me == 0)
+    std::cout << "Allegro_spin: Loading model from " << arg[2] << "\n";
 
   std::unordered_map<std::string, std::string> metadata = {{"config", ""},
                                                            {"nequip_version", ""},
@@ -220,7 +222,8 @@ void PairAllegro_spin::coeff(int narg, char **arg)
   // This is the check used by PyTorch: https://github.com/pytorch/pytorch/blob/master/torch/csrc/jit/api/module.cpp#L476
   if (model.hasattr("training"))
   {
-    std::cout << "Allegro_spin: Freezing TorchScript model...\n";
+    if (comm->me == 0)
+      std::cout << "Allegro_spin: Freezing TorchScript model...\n";
 #ifdef DO_TORCH_FREEZE_HACK
     // Do the hack
     // Copied from the implementation of torch::jit::freeze,
@@ -291,6 +294,21 @@ void PairAllegro_spin::coeff(int narg, char **arg)
   at::globalContext().setAllowTF32CuBLAS(allow_tf32);
   at::globalContext().setAllowTF32CuDNN(allow_tf32);
 
+  // Optional reproducibility switch: only when ALLEGRO_DETERMINISTIC is set in env.
+  // Default (unset) keeps the original fast, non-deterministic behavior.
+  // When enabled on GPU, also set env CUBLAS_WORKSPACE_CONFIG=:4096:8 (else torch errors).
+  if (std::getenv("ALLEGRO_DETERMINISTIC"))
+  {
+    if (comm->me == 0)
+      std::cout << "Allegro_spin: ALLEGRO_DETERMINISTIC set -> enabling deterministic algorithms\n";
+#if (TORCH_VERSION_MAJOR == 1 && TORCH_VERSION_MINOR <= 10)
+    at::globalContext().setDeterministicAlgorithms(true);
+#else
+    at::globalContext().setDeterministicAlgorithms(true, /*warn_only=*/true);
+#endif
+    at::globalContext().setDeterministicCuDNN(true);
+  }
+
   // std::cout << "Allegro_spin: Information from model: " << metadata.size() << " key-value pairs\n";
   // for( const auto& n : metadata ) {
   //   std::cout << "Key:[" << n.first << "] Value:[" << n.second << "]\n";
@@ -302,10 +320,13 @@ void PairAllegro_spin::coeff(int narg, char **arg)
   std::stringstream ss;
   int n_species = std::stod(metadata["n_species"]);
   ss << metadata["type_names"];
-  std::cout << "Type mapping:"
-            << "\n";
-  std::cout << "Allegro_spin type | Allegro_spin name | LAMMPS type | LAMMPS name"
-            << "\n";
+  if (comm->me == 0)
+  {
+    std::cout << "Type mapping:"
+              << "\n";
+    std::cout << "Allegro_spin type | Allegro_spin name | LAMMPS type | LAMMPS name"
+              << "\n";
+  }
   for (int i = 0; i < n_species; i++)
   {
     std::string ele;
@@ -315,7 +336,8 @@ void PairAllegro_spin::coeff(int narg, char **arg)
       if (ele.compare(arg[itype + 3 - 1]) == 0)
       {
         type_mapper[itype - 1] = i;
-        std::cout << i << " | " << ele << " | " << itype << " | " << arg[itype + 3 - 1] << "\n";
+        if (comm->me == 0)
+          std::cout << i << " | " << ele << " | " << itype << " | " << arg[itype + 3 - 1] << "\n";
       }
     }
   }
