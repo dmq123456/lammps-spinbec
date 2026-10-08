@@ -11,7 +11,11 @@
 #   JOBS=8                     parallel make jobs (default: number of CPU cores)
 #   BUILD_TYPE=Release         CMake build type (Release or Debug)
 #   CUDA_HOME=/usr/local/cuda  CUDA toolkit to use (default: the nvcc found in PATH)
-#   LAMMPS_TARBALL=/path/to/stable_29Sep2021_update2.tar.gz   use a local copy instead of downloading
+#   LAMMPS_TARBALL=/path/to/lammps-stable_29Sep2021_update2.tar.gz   official release to use
+#
+# The official release is looked for first as lammps-stable_29Sep2021_update2.tar.gz
+# (or stable_29Sep2021_update2.tar.gz) in this folder and in its parent folder;
+# it is downloaded only if none is found.
 set -euo pipefail
 
 LAMMPS_TAG=stable_29Sep2021_update2
@@ -60,10 +64,21 @@ if [ -f "$REPO/cmake/CMakeLists.txt" ]; then
 else
     LAMMPS_DIR="$REPO/lammps-$LAMMPS_TAG"
     if [ ! -f "$LAMMPS_DIR/cmake/CMakeLists.txt" ]; then
-        TARBALL=${LAMMPS_TARBALL:-$REPO/$LAMMPS_TAG.tar.gz}
+        # look for an already downloaded release next to this folder or inside it
+        TARBALL=${LAMMPS_TARBALL:-}
+        if [ -z "$TARBALL" ]; then
+            for f in "$REPO/lammps-$LAMMPS_TAG.tar.gz" "$REPO/$LAMMPS_TAG.tar.gz" \
+                     "$REPO/../lammps-$LAMMPS_TAG.tar.gz" "$REPO/../$LAMMPS_TAG.tar.gz"; do
+                if [ -f "$f" ]; then TARBALL="$f"; break; fi
+            done
+        fi
+        if [ -n "${LAMMPS_TARBALL:-}" ] && [ ! -f "$LAMMPS_TARBALL" ]; then
+            fail "LAMMPS_TARBALL=$LAMMPS_TARBALL does not exist."
+        fi
+        TARBALL=${TARBALL:-$REPO/$LAMMPS_TAG.tar.gz}
         if [ ! -f "$TARBALL" ]; then
             say "Downloading official LAMMPS $LAMMPS_TAG (about 120 MB)"
-            DL_HINT="Check your network/proxy, or download $LAMMPS_URL manually and run: LAMMPS_TARBALL=/path/to/file bash install.sh"
+            DL_HINT="Check your network/proxy, or download $LAMMPS_URL, put it next to this folder as lammps-$LAMMPS_TAG.tar.gz, and run install.sh again (or set LAMMPS_TARBALL=/path/to/file)"
             if command -v curl >/dev/null; then
                 curl -fL --connect-timeout 30 --retry 3 -o "$TARBALL.part" "$LAMMPS_URL" \
                     || { rm -f "$TARBALL.part"; fail "download failed. $DL_HINT"; }

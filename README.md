@@ -100,12 +100,14 @@ Options (environment variables):
 JOBS=8 bash install.sh                        # number of parallel compile jobs
 CUDA_HOME=/usr/local/cuda-11.8 bash install.sh # choose a CUDA toolkit
 BUILD_TYPE=Debug bash install.sh              # debug build
-LAMMPS_TARBALL=/path/to/stable_29Sep2021_update2.tar.gz bash install.sh   # offline
+LAMMPS_TARBALL=/path/to/lammps-stable_29Sep2021_update2.tar.gz bash install.sh  # use this release file
 ```
 
-Without internet access, download
+Offline installation: download
 <https://github.com/lammps/lammps/archive/refs/tags/stable_29Sep2021_update2.tar.gz>
-elsewhere and pass it with `LAMMPS_TARBALL`.
+elsewhere, save it as `lammps-stable_29Sep2021_update2.tar.gz` **next to** (or inside)
+this folder, and run `bash install.sh`; the file is found automatically.
+`LAMMPS_TARBALL` is only needed if the file is somewhere else.
 
 Do **not** replace the official `src/` folder by this one: some unmodified
 files are not stored here, so the files must be copied *on top of* the
