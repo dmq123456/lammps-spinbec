@@ -146,3 +146,22 @@ original code: forces <=1e-6 eV/A, spin forces ~2e-6 relative, BEC <=2e-6 e.
 BATCHSIZE 150-300 costs <5% speed. Also fixed: with several MPI ranks the original code
 left a rank-dependent constant offset in the Born effective charges (the model's
 zero_mean_born averages over local+ghost nodes per rank); now removed in both paths.
+
+## Spin field returned to fix nve/spin (2026-10-12)
+
+`compute_single_pair()` used to return `atom->fm[i]`, which fix nve/spin overwrites with
+field + langevin/spin noise + damping after every quarter-step update, so those terms
+accumulated within a timestep and the spin thermostat drove the spins to ~2.2x the set
+temperature. `compute()` now stores the network spin field in its own array (`fm_net`,
+owned + ghost atoms) and sums the ghost contributions into their owners with the pair's
+reverse communication; `compute_single_pair()` returns that array. The field therefore
+contains neither thermostat terms nor what other fixes add to `atom->fm` in `post_force`
+(e.g. `fix precession/spin`, which an earlier snapshot of `atom->fm` counted twice).
+Requires `newton on`. Checked against the snapshot version: identical NVE and
+langevin/spin runs; with `precession/spin` the Zeeman field now enters once; 1 vs 2 MPI
+ranks agree.
+
+Known issue (not fixed): the network spin field is frozen over a timestep, so the
+sequential nve/spin scheme is not symplectic and NVE spin-lattice dynamics heats the
+spins (energy drift ~0.014 meV/atom/ps at 1 fs, ~0.0024 at 0.5 fs, NiI2). Use
+`fix langevin/spin T 0.01 seed` (not as fix #0, and before fix nve/spin) for spectra.

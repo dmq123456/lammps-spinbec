@@ -71,6 +71,7 @@ PairAllegro_spin::PairAllegro_spin(LAMMPS *lmp) : PairSpin(lmp)
 {
   restartinfo = 0;
   manybody_flag = 1;
+  comm_reverse = 3;   // fm_net: ghost contributions are summed into their owners
   centroidstressflag =
       CENTROID_AVAIL; // Allow the use of the centroid/stress/atom. - Added by Hongyu Yu
 
@@ -136,6 +137,7 @@ PairAllegro_spin::~PairAllegro_spin()
     memory->destroy(cutsq);
     memory->destroy(emag);
   }
+  memory->destroy(fm_net);
 }
 
 void PairAllegro_spin::init_style()
@@ -144,6 +146,8 @@ void PairAllegro_spin::init_style()
 
   if (atom->tag_enable == 0)
     error->all(FLERR, "Pair style PairAllegro_spin requires atom IDs");
+  if (force->newton_pair == 0)
+    error->all(FLERR, "Pair style PairAllegro_spin requires newton pair on");
 
   neighbor->requests[neighbor->nrequest - 1]->ghost = 1;
 }
@@ -701,6 +705,11 @@ void PairAllegro_spin::compute(int eflag, int vflag)
 
   eng_vdwl = 0.0;
   // const double hbar = hbar;
+  if (atom->nmax > nmax_fm_net)
+  {
+    nmax_fm_net = atom->nmax;
+    memory->grow(fm_net, nmax_fm_net, 3, "pair/allegro_spin:fm_net");
+  }
   const float *spin_forces_ptr = nullptr;
   if (have_spin_forces) spin_forces_ptr = spin_forces_tensor.data_ptr<float>();
 #pragma omp parallel for reduction(+                                    : eng_vdwl)
@@ -722,6 +731,9 @@ void PairAllegro_spin::compute(int eflag, int vflag)
       fm[i][1] = 0;
       fm[i][2] = 0;
     }
+    fm_net[i][0] = fm[i][0];
+    fm_net[i][1] = fm[i][1];
+    fm_net[i][2] = fm[i][2];
 
     if (i < nlocal)
     {
@@ -731,6 +743,8 @@ void PairAllegro_spin::compute(int eflag, int vflag)
       emag[i] = atomic_energies[i][0];
     }
   }
+  // add the ghost-atom contributions of the network field into the owners
+  comm->reverse_comm_pair(this);
 
   if (vflag_atom)
   {
@@ -832,9 +846,34 @@ void PairAllegro_spin::compute(int eflag, int vflag)
   }
 }
 
-void PairAllegro_spin::compute_single_pair(int ii, double fmi[3]){ // 
-  double **fm = atom->fm; // force on spin
-  fmi[0] += fm[ii][0];
-  fmi[1] += fm[ii][1];
-  fmi[2] += fm[ii][2];
+void PairAllegro_spin::compute_single_pair(int ii, double fmi[3]){
+  // Called by fix nve/spin (and spin/sib) before every single-spin update. The network field
+  // is frozen over the timestep: return the one stored by the last compute().
+  fmi[0] += fm_net[ii][0];
+  fmi[1] += fm_net[ii][1];
+  fmi[2] += fm_net[ii][2];
+}
+
+int PairAllegro_spin::pack_reverse_comm(int n, int first, double *buf)
+{
+  int m = 0;
+  for (int i = first; i < first + n; i++)
+  {
+    buf[m++] = fm_net[i][0];
+    buf[m++] = fm_net[i][1];
+    buf[m++] = fm_net[i][2];
+  }
+  return m;
+}
+
+void PairAllegro_spin::unpack_reverse_comm(int n, int *list, double *buf)
+{
+  int m = 0;
+  for (int i = 0; i < n; i++)
+  {
+    int j = list[i];
+    fm_net[j][0] += buf[m++];
+    fm_net[j][1] += buf[m++];
+    fm_net[j][2] += buf[m++];
+  }
 }

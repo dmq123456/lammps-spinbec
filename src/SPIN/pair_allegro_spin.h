@@ -49,6 +49,16 @@ class PairAllegro_spin : public PairSpin {
   int batch_size = -1;
 
   bool use_constant_bec;
+  // Network spin field of the last compute(), owned atoms complete (ghost contributions
+  // added by this pair's own reverse communication). compute_single_pair() returns it, so
+  // fix nve/spin never sees what other fixes (langevin/spin, precession/spin, ...) write
+  // into atom->fm, and nothing accumulates within a timestep.
+  double **fm_net = nullptr;
+  int nmax_fm_net = 0;
+
+ public:
+  int pack_reverse_comm(int, int, double *) override;
+  void unpack_reverse_comm(int, int *, double *) override;
   std::vector<double> bec_constant_per_type;
 
   // void write_restart(FILE *);
