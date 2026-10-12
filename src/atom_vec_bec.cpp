@@ -38,7 +38,10 @@ AtomVecBEC::AtomVecBEC(LAMMPS *lmp) : AtomVec(lmp)
   fields_copy = (char *) "bec_dipole";
   fields_comm = (char *) "";
   fields_comm_vel = (char *) "";
-  fields_reverse = (char *) "bec";
+  // bec is written by the pair style for owned atoms only, so it must not be
+  // reverse-communicated: ghost slots hold stale values (e.g. of atoms that
+  // migrated away) which would be summed into their owners under MPI.
+  fields_reverse = (char *) "";
   fields_border = (char *) "";
   fields_border_vel = (char *) "";
   fields_exchange = (char *) "bec_dipole";
@@ -71,4 +74,25 @@ void AtomVecBEC::force_clear(int n, size_t nbytes)
 {
   memset(&bec[n][0],0,9*nbytes);
   memset(&bec_dipole[n][0],0,3*nbytes);
+}
+
+/* ----------------------------------------------------------------------
+   initialize per-atom BEC quantities of a newly created atom
+   (grow() does not zero memory, so they would otherwise start as garbage)
+------------------------------------------------------------------------- */
+
+void AtomVecBEC::create_atom_post(int ilocal)
+{
+  for (int k = 0; k < 9; k++) bec[ilocal][k] = 0.0;
+  for (int k = 0; k < 3; k++) bec_dipole[ilocal][k] = 0.0;
+}
+
+/* ----------------------------------------------------------------------
+   same for an atom read from the Atoms section of a data file
+------------------------------------------------------------------------- */
+
+void AtomVecBEC::data_atom_post(int ilocal)
+{
+  for (int k = 0; k < 9; k++) bec[ilocal][k] = 0.0;
+  for (int k = 0; k < 3; k++) bec_dipole[ilocal][k] = 0.0;
 }

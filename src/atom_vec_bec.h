@@ -30,6 +30,8 @@ class AtomVecBEC : public AtomVec {
 
   void force_clear(int, size_t);
   void grow_pointers();
+  void create_atom_post(int);
+  void data_atom_post(int);
 
  private:
   double **bec;

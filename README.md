@@ -126,3 +126,23 @@ mpirun -np 4 /path/to/lmp_mpi -in in.lmp
 
 LAMMPS is distributed under the GNU General Public License v2 (GPL-2.0);
 these modifications are distributed under the same license.
+
+## Chunked model evaluation (2026-10-10, `src/SPIN/pair_allegro_spin.cpp`)
+
+`pair_style spin/allegro_spin` now honours the environment variable `BATCHSIZE`:
+the local atoms are split into groups of at most `BATCHSIZE` centre atoms and the
+model is called once per group. Allegro is strictly local (energy = sum over centre
+atoms), so energies, forces, spin forces and virials of the groups add up exactly,
+while peak GPU memory depends only on the group size (~2-3 GB + ~10 MB per centre
+atom for the NiI2 production model) instead of the system size.
+
+```bash
+BATCHSIZE=300 lmp_mpi -in in.lmp                       # one GPU
+mpirun -np 2 -genv BATCHSIZE 300 lmp_mpi -in in.lmp     # one rank per GPU
+```
+
+Unset (or >= number of local atoms): a single call, as before. Validated against the
+original code: forces <=1e-6 eV/A, spin forces ~2e-6 relative, BEC <=2e-6 e.
+BATCHSIZE 150-300 costs <5% speed. Also fixed: with several MPI ranks the original code
+left a rank-dependent constant offset in the Born effective charges (the model's
+zero_mean_born averages over local+ghost nodes per rank); now removed in both paths.

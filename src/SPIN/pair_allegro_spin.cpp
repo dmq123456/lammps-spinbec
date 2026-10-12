@@ -42,6 +42,7 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 #include <vector>
+#include <ATen/core/Dict.h>
 
 // TODO: Only if MPI is available
 #include <mpi.h>
@@ -546,17 +547,109 @@ void PairAllegro_spin::compute(int eflag, int vflag)
   if (debug_mode)
     printf("end Allegro_spin edges\n");
 
-  c10::Dict<std::string, torch::Tensor> input;
-  input.insert("pos", pos_tensor.to(device));
-  input.insert("spin", spin_tensor.to(device));
-  input.insert("edge_index", edges_tensor.to(device));
-  input.insert("atom_types", ij2type_tensor.to(device));
-  std::vector<torch::IValue> input_vector(1, input);
+  // ---------------------------------------------------------------------------
+  // Model evaluation. BATCHSIZE (env) = max number of local centre atoms per
+  // forward call. Allegro is strictly local: the energy is a sum over centre
+  // atoms, so forces / spin forces / virials of disjoint centre subsets add up
+  // exactly, while peak GPU memory scales with the edges of one chunk only.
+  // Unset or >= nlocal: a single call, identical to the original code.
+  // ---------------------------------------------------------------------------
+  torch::Tensor pos_d = pos_tensor.to(device);
+  torch::Tensor spin_d = spin_tensor.to(device);
+  torch::Tensor types_d = ij2type_tensor.to(device);
+  torch::Tensor edges_d = edges_tensor.to(device);
 
-  // if (debug_mode)
-  //   printf("load input\n");
+  int chunk = (batch_size > 0 && batch_size < nlocal) ? batch_size : nlocal;
+  c10::impl::GenericDict output(c10::StringType::get(), c10::AnyType::get());
 
-  auto output = model.forward(input_vector).toGenericDict();
+  if (chunk >= nlocal)
+  {
+    c10::Dict<std::string, torch::Tensor> input;
+    input.insert("pos", pos_d);
+    input.insert("spin", spin_d);
+    input.insert("edge_index", edges_d);
+    input.insert("atom_types", types_d);
+    std::vector<torch::IValue> input_vector(1, input);
+    output = model.forward(input_vector).toGenericDict();
+    // zero_mean_born inside the model subtracts the mean over local+ghost nodes, which differs
+    // between MPI ranks; ghost nodes have no edges, so their output is exactly -mean -> remove it.
+    // (Single rank: a constant shift, cancelled by the global mean removal below anyway.)
+    if (atom->bec_flag && !use_constant_bec && nghost > 0 && output.contains("born_effective_charges"))
+    {
+      torch::Tensor b = output.at("born_effective_charges").toTensor();
+      torch::Tensor b2 = b.reshape({ntotal, 9});
+      output.insert_or_assign("born_effective_charges", (b2 - b2.narrow(0, nlocal, 1)).reshape(b.sizes()));
+    }
+  }
+  else
+  {
+    // edge offsets per centre (edges are stored grouped by ii, see cumsum above)
+    std::vector<long> edge_start(nlocal + 1, 0);
+    for (int ii = 0; ii < nlocal; ii++) edge_start[ii + 1] = edge_start[ii] + neigh_per_atom[ii];
+
+    torch::Tensor ilist_t = torch::from_blob(ilist, {nlocal}, torch::TensorOptions().dtype(torch::kInt32))
+                                .to(torch::kInt64).to(device);
+    auto fopt = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+    torch::Tensor forces_acc = torch::zeros({ntotal, 3}, fopt);
+    torch::Tensor spinf_acc;
+    torch::Tensor ae_acc = torch::zeros({ntotal, 1}, fopt);
+    torch::Tensor virial_acc, atom_virial_acc, bec_acc;
+    bool have_sf = false, have_bec = false;
+
+    for (int c0 = 0; c0 < nlocal; c0 += chunk)
+    {
+      int c1 = std::min(nlocal, c0 + chunk);
+      long e0 = edge_start[c0], e1 = edge_start[c1];
+      c10::Dict<std::string, torch::Tensor> input;
+      input.insert("pos", pos_d);
+      input.insert("spin", spin_d);
+      input.insert("edge_index", edges_d.narrow(1, e0, e1 - e0).contiguous());
+      input.insert("atom_types", types_d);
+      std::vector<torch::IValue> input_vector(1, input);
+      auto out = model.forward(input_vector).toGenericDict();
+
+      torch::Tensor centres = ilist_t.narrow(0, c0, c1 - c0);
+
+      forces_acc.add_(out.at("forces").toTensor().reshape({ntotal, 3}));
+      if (out.contains("spin_forces"))
+      {
+        torch::Tensor sf = out.at("spin_forces").toTensor().reshape({ntotal, 3});
+        if (!have_sf) { spinf_acc = torch::zeros({ntotal, 3}, fopt); have_sf = true; }
+        spinf_acc.add_(sf);
+      }
+      // per-atom energy is exact only for this chunk's centres (others carry just the species shift)
+      torch::Tensor ae = out.at("atomic_energy").toTensor().reshape({ntotal, 1});
+      ae_acc.index_copy_(0, centres, ae.index_select(0, centres));
+      if (vflag)
+      {
+        torch::Tensor v = out.at("virial").toTensor();
+        if (!virial_acc.defined()) virial_acc = torch::zeros_like(v);
+        virial_acc.add_(v);
+      }
+      if (vflag_atom)
+      {
+        torch::Tensor av = out.at("atom_virial").toTensor();
+        if (!atom_virial_acc.defined()) atom_virial_acc = torch::zeros_like(av);
+        atom_virial_acc.add_(av);
+      }
+      if (atom->bec_flag && !use_constant_bec && out.contains("born_effective_charges"))
+      {
+        // The model subtracts the mean over all graph nodes (zero_mean_born). Nodes that are not
+        // centres of this chunk have no edges, so their output is exactly -mean: add it back.
+        torch::Tensor b = out.at("born_effective_charges").toTensor().reshape({ntotal, 9});
+        int ref = (nghost > 0) ? nlocal : ilist[(c1 < nlocal) ? c1 : 0];
+        torch::Tensor bc = b.index_select(0, centres) - b.narrow(0, ref, 1);
+        if (!have_bec) { bec_acc = torch::zeros({ntotal, 9}, fopt); have_bec = true; }
+        bec_acc.index_copy_(0, centres, bc);
+      }
+    }
+    output.insert("forces", forces_acc);
+    if (have_sf) output.insert("spin_forces", spinf_acc);
+    output.insert("atomic_energy", ae_acc);
+    if (virial_acc.defined()) output.insert("virial", virial_acc);
+    if (atom_virial_acc.defined()) output.insert("atom_virial", atom_virial_acc);
+    if (have_bec) output.insert("born_effective_charges", bec_acc);
+  }
 
   // if (debug_mode)
   //   printf("forward model\n");
