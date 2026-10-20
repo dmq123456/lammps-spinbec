@@ -33,6 +33,7 @@ local/cudnn_stub/lib64/
 !/src/SPIN/compute_spin.cpp
 !/src/SPIN/fix_nve_spin.cpp
 !/src/SPIN/fix_nve_spin.h
+!/src/SPIN/fix_langevin_spin.cpp
 !/src/SPIN/fix_spin_sib.cpp
 !/src/SPIN/fix_spin_sib.h
 !/src/SPIN/fix_spin_sib_npt.cpp

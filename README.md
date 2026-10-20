@@ -164,4 +164,12 @@ ranks agree.
 Known issue (not fixed): the network spin field is frozen over a timestep, so the
 sequential nve/spin scheme is not symplectic and NVE spin-lattice dynamics heats the
 spins (energy drift ~0.014 meV/atom/ps at 1 fs, ~0.0024 at 0.5 fs, NiI2). Use
-`fix langevin/spin T 0.01 seed` (not as fix #0, and before fix nve/spin) for spectra.
+`fix langevin/spin T 0.01 seed` for spectra. Since v4 it may be fix #0, but it must
+still be defined after every `precession/spin` fix and before `fix nve/spin`.
+
+## v4 (2026-10-12): merge of v3 and v2.1
+
+v4 = v3 (pair_allegro_spin fm_net + own reverse communication; atom_vec_bec without bec
+reverse communication and with zero-initialised bec/bec_dipole) + v2.1
+(src/SPIN/fix_langevin_spin.cpp: `flag_force` starts at -1, so fix langevin/spin may be
+fix #0; the real check against fix precession/spin is kept).
