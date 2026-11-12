@@ -65,7 +65,8 @@ void ComputeBEC::compute_vector()
   double dipole_mpi[3] = {0.0, 0.0, 0.0};
   double bec_all[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   double bec_all_mpi[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  int nlocal_mpi = 0;
+  int group_count_local = 0;
+  int group_count_mpi = 0;
 
   inv_volume = 1.0 / (domain->xprd * domain->yprd * domain->zprd);
   // compute dipole moment
@@ -90,13 +91,14 @@ void ComputeBEC::compute_vector()
           bec_all[6] += bec[i][6];
           bec_all[7] += bec[i][7];
           bec_all[8] += bec[i][8];
+          group_count_local++;
       }
     }
   }
 
   MPI_Allreduce(dipole, dipole_mpi, 3, MPI_DOUBLE, MPI_SUM, world);
   MPI_Allreduce(bec_all, bec_all_mpi, 9, MPI_DOUBLE, MPI_SUM, world);
-  MPI_Allreduce(&nlocal, &nlocal_mpi, 1, MPI_INT, MPI_SUM, world);
+  MPI_Allreduce(&group_count_local, &group_count_mpi, 1, MPI_INT, MPI_SUM, world);
   vector[0] = dipole_mpi[0];
   vector[1] = dipole_mpi[1];
   vector[2] = dipole_mpi[2];
@@ -104,7 +106,10 @@ void ComputeBEC::compute_vector()
   for (int i = 0; i < 9; i++) {
     vector[3] += bec_all_mpi[i] * bec_all_mpi[i];
   }
-  vector[3] = sqrt(vector[3]) / nlocal_mpi / 9;
+  if (group_count_mpi > 0)
+    vector[3] = sqrt(vector[3]) / group_count_mpi / 9;
+  else
+    vector[3] = 0.0;
 }
 
 /* ---------------------------------------------------------------------- */
